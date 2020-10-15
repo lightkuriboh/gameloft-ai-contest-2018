@@ -1,0 +1,1032 @@
+#include <iostream>
+#include <sstream>
+#include <vector>
+#include <math.h>
+#include <algorithm>
+#include <random>
+
+using namespace std;
+
+typedef pair<int, int> vec2;
+
+#define X first
+#define Y second
+#define mp make_pair
+
+#define sqr(x) ((x) * (x))
+
+#define MOVE 1
+#define SHOOT 2
+#define WAIT 0
+
+int myTeamID = 0;
+int MAP_W = 14400;
+int MAP_H = 9600;
+int numTurn = 1000;
+
+const vec2 theNetY = vec2(3000, 5200);
+const int trailingNet = 1500;
+const int maxDistPass = 4000;
+const int minDistPass = 1000;
+const int maxDistShoot = 3500;
+
+const int goalWidth = 2800;
+
+vector<int> fieldLeft = {1},
+            fieldRight = {3, 2};
+
+bool inFieldLeft (const int &state) {
+    for (auto x: fieldLeft) {
+        if (state == x) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool inFieldRight (const int &state) {
+    for (auto x: fieldRight) {
+        if (state == x) {
+            return true;
+        }
+    }
+    return false;
+}
+
+vector <vec2> kickTargets = {
+                                vec2(MAP_W, 3802),
+                                vec2(MAP_W, 3952),
+                                vec2(MAP_W, 4100),
+                                vec2(MAP_W, 4250),
+                                vec2(MAP_W, 4400),
+                                vec2(MAP_W, 4550),
+                                vec2(MAP_W, 4700),
+                            };
+
+const int maxMove = 300;
+const int maxKick = 200;
+const int deaccelation = 120;
+
+class Ball {
+public:
+    vec2 ballPosition;
+    vec2 ballSpeed;
+    vector <vec2> possible;
+
+    Ball (const int &x, const int &y) {
+        this->ballPosition = mp(x, y);
+    }
+
+    void updateBallInfo (const int &x, const int &y, const int &sx, const int &sy) {
+        this->ballPosition = mp(x, y);
+        this->ballSpeed = mp(sx, sy);
+        this->predictBall();
+    }
+
+    int speedCalc() {
+        return sqrt(sqr(this->ballSpeed.X) + sqr(this->ballSpeed.Y));
+    }
+
+    void predictBall() {
+        possible.clear();
+        int speedNow = this->speedCalc();
+        possible.push_back(this->ballPosition);
+
+        vec2 curPosition = this->ballPosition;
+        vec2 curSpeed = this->ballSpeed;
+
+        while (speedNow >= deaccelation) {
+
+            speedNow -= deaccelation;
+
+            if (this->ballSpeed.Y != 0) {
+
+                double tmp = 1.0 + double(sqr(this->ballSpeed.X)) / double(sqr(this->ballSpeed.Y));
+                int newSpeedY = sqrt(double(sqr(speedNow)) / tmp);
+
+                if (curSpeed.Y != 0) {
+                    newSpeedY *= curSpeed.Y / abs(curSpeed.Y);
+                }
+
+                int newSpeedX = sqrt(sqr(speedNow) - sqr(newSpeedY));
+
+                if (curSpeed.X != 0) {
+                     newSpeedX *= curSpeed.X / abs(curSpeed.X);
+                }
+
+                curSpeed = mp(newSpeedX, newSpeedY );
+            } else {
+
+                if (curSpeed.X != 0) {
+                    curSpeed = mp(speedNow * curSpeed.X / abs(curSpeed.X), 0);
+                }
+                else {
+                    curSpeed = mp(speedNow, 0);
+                }
+
+            }
+
+            curPosition.X += curSpeed.X;
+            curPosition.Y += curSpeed.Y;
+
+            if (curPosition.X > MAP_W || curPosition.Y > MAP_H || curPosition.X < 0 || curPosition.Y < 0) break;
+
+            possible.push_back(curPosition);
+        }
+
+    }
+
+    bool canBeShoot() {
+        return this->ballPosition.X >= MAP_W - maxDistShoot &&
+                theNetY.X - trailingNet <= this->ballPosition.Y && this->ballPosition.Y <= theNetY.Y + trailingNet;
+    }
+};
+
+class Player {
+public:
+    vec2 playerPosition;
+    bool isEnemy;
+    bool isPaired;
+
+    struct Action {
+        int action;
+        int desX, desY, force;
+    } playerAction;
+
+
+    Player (const int &x, const int &y, const bool &_isEnemy) {
+        this->playerPosition = mp(x, y);
+        this->isEnemy = _isEnemy;
+        this->playerAction = Action{WAIT, 0, 0, 0};
+    }
+
+    void updatePlayerPosition(const int &x, const int &y) {
+        this->playerPosition = mp(x, y);
+        this->isPaired = false;
+        this->catchTheBall = -1;
+    }
+
+    int distToBall(Ball *ball) {
+        return sqrt(
+            sqr(this->playerPosition.X - ball->ballPosition.X)
+            + sqr(this->playerPosition.Y - ball->ballPosition.Y)
+        );
+    }
+
+    void updateAction(const int &action, const int &desX, const int &desY, const int &force) {
+        this->playerAction.action = action;
+        this->playerAction.desX = desX;
+        this->playerAction.desY = desY;
+        this->playerAction.force = force;
+    }
+
+    int catchTheBall;
+};
+
+vector <vec2> initiatePosition =
+                                {
+                                    mp(5400, 2400)
+                                    ,
+                                    mp(5400, 3600)
+                                    ,
+                                    mp(5400, 4800)
+                                    ,
+                                    mp(5400, 6000)
+                                    ,
+                                    mp(5400, 7200)
+                                };
+
+int HALF_1 = 1;
+int HALF_2 = 2;
+int EXTRA = 3;
+int PENALTY = 4;
+
+class gameMatch {
+public:
+    Ball* ball;
+    Player* player[10];
+    int gameState;
+    int gameTurn;
+    bool weControling = false;
+
+    vec2 convertTargetPostition(vec2 target) {
+        if (inFieldLeft(this->gameState)) {
+            return target;
+        }
+        if (inFieldRight(this->gameState)) {
+            return vec2(MAP_W - target.X, target.Y);
+        }
+    }
+
+    gameMatch () {
+        ball = new Ball(MAP_W / 2, MAP_H / 2);
+        for (int i = 0; i < 5; i++) {
+            player[i] = new Player(initiatePosition[i].X, initiatePosition[i].Y, false);
+        }
+        for (int i = 5; i < 10; i++) {
+            player[i] = new Player(0, 0, true);
+        }
+    }
+
+    int Dist(vec2 a, vec2 b) {
+        return sqrt(sqr(a.X - b.X) + sqr(a.Y - b.Y));
+    }
+
+    Player* enemyHoldingBall () {
+        for (int i = 5; i < 10; i++) {
+            if (this->player[i]->distToBall(this->ball) < maxKick) {
+                return this->player[i];
+            }
+        }
+        return nullptr;
+    }
+
+    bool weCanKickBall (Player* attacker) {
+
+        if (attacker->distToBall(this->ball) <= maxKick) {
+            return true;
+        }
+        return false;
+    }
+
+    void parseData(const string &s) {
+        istringstream is (s);
+        int n;
+        vector <int> vt;
+        while (is >> n) {
+            vt.push_back(n);
+        }
+
+        this->gameTurn = vt[0];
+
+        if (myTeamID == 1) {
+            vector <int> tmp;
+            for (auto x: vt) tmp.push_back(x);
+            vt.clear();
+            for (int i = 0; i < 8; i++)
+                vt.push_back(tmp[i]);
+            for (int i = 23; i < 38; i++)
+                vt.push_back(tmp[i]);
+            for (int i = 8; i < 23; i++)
+                vt.push_back(tmp[i]);
+        }
+
+        this->ball->updateBallInfo(vt[4], vt[5], vt[6], vt[7]);
+
+        for (int i = 0; i < 10; i++) {
+            int id = vt[8 + 3 * i];
+            if (i > 4) id += 5;
+            this->player[id]->updatePlayerPosition(vt[9 + 3 * i], vt[10 + 3 * i]);
+        }
+        this->gameState = vt[3];
+    }
+
+    Player* getTheUselessEnemy () {
+        Player* uselessEnemy;
+
+        if (inFieldLeft(this->gameState)) {
+
+            int mxX = -1;
+
+            for (int i = 5; i < 10; i++) {
+                if (this->player[i]->playerPosition.X > mxX) {
+                    mxX = this->player[i]->playerPosition.X;
+                    uselessEnemy = this->player[i];
+                }
+            }
+        }
+        else
+        if (inFieldRight(this->gameState)) {
+            int mnn = 1000000000;
+            for (int i = 5; i < 10; i++) {
+                if (this->player[i]->playerPosition.X < mnn) {
+                    mnn = this->player[i]->playerPosition.X;
+                    uselessEnemy = this->player[i];
+                }
+            }
+        }
+        return uselessEnemy;
+    }
+
+    Player* getOurAttacker () {
+
+        for (int i = 0; i < 5; i++) {
+            if (this->weCanKickBall(this->player[i])) {
+                return this->player[i];
+            }
+        }
+
+        Player* ans = nullptr;
+
+        int mnStep = 1000000000;
+        int good = -1;
+        for (int i = 0; i < 5; i++) {
+            int mnNow = 1000000000;
+            int tmpGood = -1;
+            for (int j = 0; j < (int)this->ball->possible.size(); j++) {
+                auto pos = this->ball->possible[j];
+                int distPlayerToPos = this->Dist(this->player[i]->playerPosition, pos);
+                int stepToBall = distPlayerToPos / maxMove;
+                int gap = j - stepToBall;
+
+                if (j < 3 && distPlayerToPos < maxKick) {
+                    ans = this->player[i];
+                    ans->catchTheBall = -2;
+                    return ans;
+                }
+
+                if (gap > 0) {
+                    if (gap < mnNow) {
+                        mnNow = gap;
+                        tmpGood = j;
+                    }
+
+                }
+            }
+            if (mnNow > 0 && mnNow < mnStep) {
+                mnStep = mnNow;
+                ans = this->player[i];
+                good = tmpGood;
+            }
+        }
+
+        if (ans == nullptr) {
+            int minDist = 1000000000;
+            for (int i = 0; i < 5; i++) {
+                int mnn = 1000000000;
+                for (auto pos: this->ball->possible) {
+                    mnn = min(mnn, this->Dist(this->player[i]->playerPosition, pos));
+                }
+                if (mnn < minDist) {
+                    minDist = mnn;
+                    ans = this->player[i];
+                }
+            }
+        }
+
+        ans->catchTheBall = good;
+
+        return ans;
+    }
+
+    vec2 calcGoodPosition(Player* enemy, bool isDangerous) {
+
+        vec2 Vector = vec2(this->ball->ballPosition.X - enemy->playerPosition.X, this->ball->ballPosition.Y - enemy->playerPosition.Y);
+
+        if (isDangerous) {
+            if (inFieldLeft(this->gameState)) {
+                return vec2(enemy->playerPosition.X - 500, enemy->playerPosition.Y);
+            } else
+            if (inFieldRight(this->gameState)) {
+                return vec2(enemy->playerPosition.X + 500, enemy->playerPosition.Y);
+            }
+        }
+
+        if (Vector.X != 0 && Vector.Y != 0) {
+
+            int yyy = 3 * maxKick;
+
+            int xxx = yyy * Vector.X / Vector.Y;
+            if (max(xxx, yyy) > maxKick) {
+                int Ratio = abs(max(xxx, yyy)) / maxKick;
+                xxx /= Ratio;
+                yyy /= Ratio;
+            }
+            if (Vector.X * xxx < 0) xxx *= -1;
+            if (Vector.Y * yyy < 0) yyy *= -1;
+            return vec2(enemy->playerPosition.X + xxx, enemy->playerPosition.Y + yyy);
+        }
+
+        return enemy->playerPosition;
+    }
+
+    vec2 theBestKickPoint(Player* attacker) {
+        int mxx = -1;
+        vec2 ans;
+        int longest = 1000 * 1000  / (2 * deaccelation);
+        for (auto targett: kickTargets) {
+            auto target = this->convertTargetPostition(targett);
+            int mnn = 1000000000;
+            for (int i = 5; i < 10; i++) {
+                mnn = min(mnn, this->Dist(this->player[i]->playerPosition, target));
+            }
+            if (mnn > mxx && this->Dist(attacker->playerPosition, target) <= longest) {
+                mxx = mnn;
+                ans = target;
+            }
+        }
+        return ans;
+    }
+
+    bool weCanShoot(Player* attacker) {
+        int targetX = MAP_W;
+        if (inFieldRight(this->gameState)) {
+            targetX = 0;
+        }
+        else
+        if (this->gameState == PENALTY) {
+
+        }
+        return abs(attacker->playerPosition.X - targetX) <= maxDistShoot;
+    }
+
+
+    int dx[8] = {1, 1, 1, 0, 0, -1, -1, -1},
+        dy[8] = {0, 1, -1, 1, -1, 0, -1, 1};
+
+    Player* dangerousEnemy(Player* otherDanger) {
+        Player* ans = nullptr;
+        if (inFieldLeft(this->gameState)) {
+            int mn = 1000000000;
+            for (int i = 5; i < 10; i++) if (this->player[i] != otherDanger) {
+                if (this->player[i]->playerPosition.X < mn) {
+                    mn = this->player[i]->playerPosition.X;
+                    ans = this->player[i];
+                }
+            }
+        } else
+        if (inFieldRight(this->gameState)) {
+            int mx = -1;
+            for (int i = 5; i < 10; i++) if (this->player[i] != otherDanger) {
+                if (this->player[i]->playerPosition.X > mx) {
+                    mx = this->player[i]->playerPosition.X;
+                    ans = this->player[i];
+                }
+            }
+        }
+        return ans;
+    }
+
+    bool isHigherDependOnState(Player* x, Player* xx) {
+        if (inFieldLeft(this->gameState)) {
+            return x->playerPosition.X > xx->playerPosition.X;
+        }
+        return x->playerPosition.X < xx->playerPosition.X;
+    }
+
+    vec2 calcGoodDirection (Player* attacker) {
+        int rangeToCatch = 600;
+        for (int i = 0; i < 5; i++) {
+            if (attacker != this->player[i]) {
+                int dist = this->Dist(attacker->playerPosition, this->player[i]->playerPosition);
+                if (this->isHigherDependOnState(this->player[i], attacker) && minDistPass <= dist && dist <= maxDistShoot) {
+                    vec2 nxPoint = this->player[i]->playerPosition;
+                    if (nxPoint.Y > MAP_H / 2) {
+                        nxPoint.Y -= rangeToCatch;
+                        int xxx = rangeToCatch;
+                        if (this->gameState != HALF_1) xxx = -xxx;
+                        nxPoint.X += xxx;
+                    } else {
+                        int xxx = rangeToCatch;
+                        if (this->gameState != HALF_1) xxx = -xxx;
+                        nxPoint.Y += rangeToCatch;
+                        nxPoint.X += xxx;
+                    }
+                    return nxPoint;
+                }
+            }
+        }
+
+        for (int i = 0; i < 5; i++) {
+            if (attacker != this->player[i]) {
+                if (this->isHigherDependOnState(this->player[i], attacker)) {
+                    vec2 nxPoint = this->player[i]->playerPosition;
+                    if (nxPoint.Y > MAP_H / 2) {
+                        nxPoint.Y -= rangeToCatch;
+                        int xxx = rangeToCatch;
+                        if (this->gameState != HALF_1) xxx = -xxx;
+                        nxPoint.X += xxx;
+                    } else {
+                        int xxx = rangeToCatch;
+                        if (this->gameState != HALF_1) xxx = -xxx;
+                        nxPoint.Y += rangeToCatch;
+                        nxPoint.X += xxx;
+                    }
+                    return nxPoint;
+                }
+            }
+        }
+
+        int cnt = 0;
+        for (int i = 5; i < 10; i++) {
+            bool ok = this->isHigherDependOnState(this->player[i], attacker);
+            if (ok && this->Dist(this->player[i]->playerPosition, attacker->playerPosition) > 2000) {
+                ++cnt;
+            }
+        }
+
+        if (cnt < 3) {
+            int st = 0;
+            int fn = 3;
+            if (this->gameState != HALF_1)
+                st = 5, fn = 8;
+
+            if (attacker->playerPosition.Y > MAP_H / 2 + goalWidth / 2) {
+                swap(dx[1], dx[2]);
+                swap(dy[1], dy[2]);
+                swap(dx[7], dx[6]);
+                swap(dy[7], dy[6]);
+            }
+
+            for (int i = st; i < fn; i++) {
+                bool canBeSteal = false;
+                int maxRange = 10;
+                for (int range = 1; range <= maxRange; range++) {
+
+                    int dist = maxKick * range;
+
+                    vec2 nxPoint = vec2(attacker->playerPosition.X + dx[i] * dist, attacker->playerPosition.Y + dy[i] * dist);
+
+                    for (int j = 5; j < 10; j++) {
+                        if (this->Dist(this->player[j]->playerPosition, nxPoint) <= maxKick) {
+                            canBeSteal = true;
+                            break;
+                        }
+                    }
+                }
+                if (!canBeSteal) {
+                    return vec2(
+                                attacker->playerPosition.X + dx[i] * maxRange * maxKick,
+                                attacker->playerPosition.Y + dy[i] * maxRange * maxKick
+                                );
+                }
+            }
+
+            if (attacker->playerPosition.Y > MAP_H / 2 + goalWidth / 2) {
+                swap(dx[1], dx[2]);
+                swap(dy[1], dy[2]);
+                swap(dx[7], dx[6]);
+                swap(dy[7], dy[6]);
+            }
+
+        }
+
+        for (int i = 0; i < 5; i++) {
+            if (attacker != this->player[i]) {
+                int maxRange = 10;
+                bool canBeSteal = false;
+                for (int range = 1; range <= maxRange; range++) {
+
+                    int dist = maxKick * range;
+
+                    vec2 nxPoint = vec2(attacker->playerPosition.X + dx[i] * dist, attacker->playerPosition.Y + dy[i] * dist);
+
+                    for (int j = 5; j < 10; j++) {
+                        if (this->Dist(this->player[j]->playerPosition, nxPoint) < maxKick) {
+                            canBeSteal = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!canBeSteal) {
+                    return this->player[i]->playerPosition;
+                }
+            }
+        }
+    }
+
+    int forceToKick(vec2 A, vec2 B) {
+        int dist = this->Dist(A, B);
+        int velo = sqrt(2 * dist * deaccelation);
+        return velo / 10;
+    }
+
+    int higherPosition(const int &x) {
+        int delta = 300;
+
+        if (inFieldRight(this->gameState)) {
+            delta = -delta;
+        }
+
+        return x + delta;
+    }
+
+
+    void processAttackPlan(Player* one, Player* two, Player* three) {
+
+        bool canHoldBall = true;
+        Player* nearestEnemy = nullptr;
+        int mn = 1000000000;
+        for (int i = 5; i < 10; i++) {
+            if (this->Dist(this->player[i]->playerPosition, one->playerPosition) < mn) {
+                mn = this->Dist(this->player[i]->playerPosition, one->playerPosition);
+                nearestEnemy = this->player[i];
+            }
+        }
+
+        int safeDist = 1500, dangerousDist = 901;
+        if (this->weCanKickBall(one)) {
+            vec2 curPos = one->playerPosition;
+            int deltaX = 300, deltaY = 0;
+
+            if (dangerousDist <= mn && mn <= safeDist) {
+                int xx = nearestEnemy->playerPosition.X - one->playerPosition.X;
+                int yy = nearestEnemy->playerPosition.Y - one->playerPosition.Y;
+                int xxx = 200, yyy;
+                if (xx == 0) {
+                    yyy = 200;
+                } else {
+                    yyy = xxx * yy / xx;
+                }
+                if (xx * xxx > 0) xxx = - xxx;
+                if (yy * yyy > 0) yyy = - yyy;
+                deltaX = xxx;
+                deltaY = yyy;
+
+                int force = this->forceToKick(this->ball->ballPosition, vec2(curPos.X + deltaX, curPos.Y + deltaY));
+                one->updateAction(SHOOT, curPos.X + deltaX, curPos.Y + deltaY, force);
+
+            } else if (mn < dangerousDist) {
+
+                int dX = 600;
+
+                if (inFieldRight(this->gameState)) {
+                    dX = -dX;
+                }
+
+                vec2 tarPos = two->playerPosition;
+                tarPos.X += dX;
+
+                if (this->Dist(this->ball->ballPosition, tarPos) <= maxDistPass) {
+                    one->updateAction(SHOOT, tarPos.X, tarPos.Y,
+                                      min(100, this->forceToKick(this->ball->ballPosition, tarPos) + 20));
+
+                } else {
+                    tarPos = three->playerPosition;
+                    tarPos.X += dX;
+                    if (this->Dist(this->ball->ballPosition, tarPos) <= maxDistPass) {
+                        one->updateAction(SHOOT, tarPos.X, tarPos.Y,
+                                      min(100, this->forceToKick(this->ball->ballPosition, tarPos) + 20));
+                    } else {
+                        tarPos.X -= dX;
+                        one->updateAction(SHOOT, tarPos.X, tarPos.Y,
+                                      min(100, this->forceToKick(this->ball->ballPosition, tarPos) + 20));
+                    }
+                }
+
+            } else {
+
+
+
+                int force = this->forceToKick(this->ball->ballPosition, vec2(curPos.X + deltaX, curPos.Y + deltaY));
+                one->updateAction(SHOOT, curPos.X + deltaX, curPos.Y + deltaY, force);
+            }
+
+
+
+        } else {
+        }
+        two->updateAction(MOVE, this->higherPosition(two->playerPosition.X), two->playerPosition.Y, 0);
+
+            three->updateAction(MOVE, this->higherPosition(three->playerPosition.X), three->playerPosition.Y, 0);
+
+    }
+
+    void attackPlan(Player* attacker) {
+
+
+        Player* highestPlayer = this->player[0];
+        for (int i = 1; i < 5; i++) {
+            if (this->isHigherDependOnState(this->player[i], highestPlayer)) {
+                highestPlayer = this->player[i];
+            }
+        }
+
+        Player* theSecondHighest = nullptr;
+        for (int i = 0; i < 5; i++) {
+            if (this->player[i] != highestPlayer) {
+                if (theSecondHighest == nullptr || this->isHigherDependOnState(this->player[i], theSecondHighest)) {
+                    theSecondHighest = this->player[i];
+                }
+            }
+        }
+
+        Player* theThirdHighest = nullptr;
+        for (int i = 0; i < 5; i++) {
+            if (this->player[i] != highestPlayer && this->player[i] != theSecondHighest) {
+                if (theThirdHighest == nullptr || this->isHigherDependOnState(this->player[i], theThirdHighest)) {
+                    theThirdHighest = this->player[i];
+                }
+            }
+        }
+
+        if (attacker == highestPlayer) {
+
+           this->processAttackPlan(highestPlayer, theSecondHighest, theThirdHighest);
+
+        } else
+        if (attacker == theSecondHighest) {
+
+            this->processAttackPlan(theSecondHighest, highestPlayer, theThirdHighest);
+
+        } else
+        if (attacker == theThirdHighest) {
+
+            this->processAttackPlan(theThirdHighest, highestPlayer, theSecondHighest);
+
+        } else {
+            int delta = 450;
+            if (inFieldRight(this->gameState)) delta = -delta;
+
+            Player* targetPlayer = theThirdHighest;
+
+            if (this->Dist(attacker->playerPosition, theSecondHighest->playerPosition) <= maxDistPass) {
+                targetPlayer = theSecondHighest;
+            }
+
+            if (this->Dist(attacker->playerPosition, highestPlayer->playerPosition) <= maxDistPass) {
+                targetPlayer = highestPlayer;
+            }
+
+            attacker->updateAction(SHOOT,
+                                   targetPlayer->playerPosition.X + delta, targetPlayer->playerPosition.Y,
+                                    min(100, this->forceToKick(this->ball->ballPosition, targetPlayer->playerPosition) + 10)
+                                   );
+        }
+
+
+        //##################
+
+    }
+
+    void attackPlan2(Player* attacker) {
+        int safeDist = 1500;
+        int averageDist = 900;
+        int dangerousDist = 450;
+    }
+
+    void processNotPenalty () {
+        for (int i = 0; i < 5; i++) {
+            this->player[i]->catchTheBall = -1;
+        }
+
+        Player* uselessEnemy = this->getTheUselessEnemy();
+        Player* ourAttacker = this->getOurAttacker();
+        Player* dangerousAttacker = this->dangerousEnemy(nullptr);
+        Player* dangerousAttacker2 = this->dangerousEnemy(dangerousAttacker);
+
+        if (this->weCanKickBall(ourAttacker)) {
+            this->weControling = true;
+        }
+
+
+        int cntDanger = 0;
+        for (int cnt = 0; cnt < 4; cnt++) {
+            for (int i = 5; i < 10; i++) {
+                if (this->player[i] != uselessEnemy && !this->player[i]->isPaired) {
+                    int minDist = 1000000000;
+                    Player* paired;
+                    for (int j = 0; j < 5; j++) {
+                        if (!this->player[j]->isPaired && this->player[j] != ourAttacker) {
+                            if (this->Dist(this->player[i]->playerPosition, this->player[j]->playerPosition) < minDist) {
+                                minDist = this->Dist(this->player[i]->playerPosition, this->player[j]->playerPosition);
+                                paired = this->player[j];
+                            }
+                        }
+                    }
+
+                    paired->isPaired = true;
+                    this->player[i]->isPaired = true;
+
+                    Player* dangerEnemy = nullptr;
+                    Player* playerNow = this->enemyHoldingBall();
+
+                    if (playerNow == nullptr || playerNow == dangerousAttacker || playerNow == dangerousAttacker2) {
+                        playerNow = this->player[i];
+                    }
+
+                    if (cntDanger == 0 && playerNow != dangerousAttacker && playerNow != dangerousAttacker2) {
+                        dangerEnemy = dangerousAttacker;
+                        ++cntDanger;
+                    } else
+                    if (cntDanger == 1 && playerNow != dangerousAttacker && playerNow != dangerousAttacker2) {
+                        dangerEnemy = dangerousAttacker2;
+                        ++cntDanger;
+                    }
+
+
+                    vec2 ngonPosition = this->calcGoodPosition(playerNow,
+                                                               playerNow == dangerousAttacker ||
+                                                               playerNow == dangerousAttacker2
+                                                               );
+
+                    if (dangerEnemy != nullptr) {
+                        vec2 dist = vec2(
+                                            playerNow->playerPosition.X - dangerEnemy->playerPosition.X
+                                            ,
+                                            playerNow->playerPosition.Y - dangerEnemy->playerPosition.Y
+                                        );
+                        int XXX = dist.X / 5;
+                        int YYY = dist.Y / 5;
+                        if (dist.X != 0 && dist.Y != 0) {
+                            YYY = XXX * dist.Y / dist.X;
+                        }
+                        if (XXX * dist.X < 0) XXX = -XXX;
+                        if (YYY * dist.Y < 0) YYY = -YYY;
+
+                        //ngonPosition = vec2(dangerEnemy->playerPosition.X + XXX, dangerEnemy->playerPosition.Y + YYY);
+
+                        //cerr << i + 1 << " as\n";
+
+                    }
+                    paired->updateAction(MOVE, ngonPosition.X, ngonPosition.Y, 0);
+                }
+            }
+        }
+
+        if (this->enemyHoldingBall()) {
+            this->weControling = false;
+        }
+
+        if (this->weControling) {
+            this->attackPlan(ourAttacker);
+            //this->attackPlan2(ourAttacker);
+        }
+
+        int xxx;
+        for (int i = 0; i < 5; i++) {
+            if (this->player[i] == ourAttacker) {
+                xxx = i + 1;
+            }
+        }
+        cerr << this->weControling << " " << xxx << " fuck\n";
+
+        if (this->weCanKickBall(ourAttacker)) {
+
+            this->weControling = true;
+
+            if (this->weCanShoot(ourAttacker)) {
+
+                vec2 tar = this->theBestKickPoint(ourAttacker);
+                ourAttacker->updateAction(SHOOT, tar.X, tar.Y, 100);
+
+            } else {
+
+
+
+                //vec2 ngonPosition = this->calcGoodDirection(ourAttacker);
+                //int force = this->forceToKick(this->ball->ballPosition, ngonPosition);
+                //ourAttacker->updateAction(SHOOT, ngonPosition.X, ngonPosition.Y, min(100, force + 10));
+                //this->attackPlan(ourAttacker);
+
+            }
+
+        } else {
+
+            int sz = this->ball->possible.size();
+            if (!sz) {
+                ourAttacker->updateAction(MOVE, this->ball->ballPosition.X, this->ball->ballPosition.Y, 0);
+            } else {
+                if (ourAttacker->catchTheBall != -1) {
+                    if (ourAttacker->catchTheBall == -2) {
+                        ourAttacker->updateAction(WAIT, ourAttacker->playerPosition.X, ourAttacker->playerPosition.Y, 0);
+                    } else {
+                        ourAttacker->updateAction(MOVE, this->ball->possible[ourAttacker->catchTheBall].X,
+                                                    this->ball->possible[ourAttacker->catchTheBall].Y, 0);
+                    }
+                } else {
+                    ourAttacker->updateAction(MOVE, this->ball->possible[sz - 1].X,
+                                                    this->ball->possible[sz - 1].Y, 0);
+                }
+            }
+
+        }
+
+    }
+
+    vec2 tarPointToCatchByGK = vec2(-1, -1);
+
+    void processPenalty () {
+        if( ( myTeamID == 0 && this->gameTurn == 0 ) || ( myTeamID == 1 && this->gameTurn == 1 ) )
+        {
+            tarPointToCatchByGK = vec2(-1, -1);
+
+            std::default_random_engine generator1;
+            std::uniform_int_distribution<int> distribution1(0,1);
+            int ch1 = distribution1(generator1);
+            std::default_random_engine generator2;
+            std::uniform_int_distribution<int> distribution2(5,6);
+            int ch2 = distribution2(generator2);
+            std::default_random_engine generator3;
+            std::uniform_int_distribution<int> distribution3(0,1);
+            int ch3 = distribution3(generator3);
+
+            vec2 target;
+
+            if (ch3 == 0) {
+                target = kickTargets[ch1];
+            } else {
+                target = kickTargets[ch2];
+            }
+            target.X = MAP_W - target.X;
+            this->player[0]->updateAction(SHOOT, target.X, target.Y, 100);
+        }
+        else
+        {
+            Player* ourAttacker = this->player[0];
+
+            if (this->weCanKickBall(ourAttacker)) {
+
+                ourAttacker->updateAction(SHOOT, MAP_W, MAP_H, 100);
+
+            } else {
+                int sz = this->ball->possible.size();
+                if (sz < 2) {
+                    ourAttacker->updateAction(SHOOT, MAP_W, MAP_H, 0);
+                } else {
+                    if (tarPointToCatchByGK == vec2(-1, -1)) {
+
+                        vec2 p1 = this->ball->possible[0],
+                             p2 = this->ball->possible[1];
+
+                        p1.Y = MAP_H - p1.Y;
+                        p2.Y = MAP_H - p2.Y;
+                        vec2 n = vec2(p1.Y - p2.Y, p2.X - p1.X);
+                        int YYY = (p1.X * n.X + p1.Y * n.Y) / n.Y;
+                        int dist = abs(YYY - ourAttacker->playerPosition.Y);
+                        int step = dist / maxMove;
+                        int trail = dist - step * maxMove;
+
+                        if (trail <= maxKick) {
+                            if (YYY > ourAttacker->playerPosition.Y) {
+                                tarPointToCatchByGK = vec2(0, ourAttacker->playerPosition.Y + step * maxMove);
+                            } else {
+                                tarPointToCatchByGK = vec2(0, ourAttacker->playerPosition.Y - step * maxMove);
+                            }
+                        } else {
+                            if (YYY > ourAttacker->playerPosition.Y) {
+                                tarPointToCatchByGK = vec2(0, ourAttacker->playerPosition.Y + (step + 1) * maxMove);
+                            } else {
+                                tarPointToCatchByGK = vec2(0, ourAttacker->playerPosition.Y - (step + 1) * maxMove);
+                            }
+                        }
+                    }
+                    ourAttacker->updateAction(MOVE, tarPointToCatchByGK.X, tarPointToCatchByGK.Y, 0);
+                }
+            }
+
+        }
+    }
+
+    void process() {
+        if (this->gameState == PENALTY) {
+            this->processPenalty();
+        } else {
+            this->processNotPenalty();
+        }
+    }
+
+    string responseToServer () {
+        string ans = "";
+        for (int i = 0; i < 5; i++) {
+            printf("%d %d %d %d ",
+                this->player[i]->playerAction.action,
+
+
+                this->player[i]->playerAction.desX,
+
+
+                this->player[i]->playerAction.desY,
+
+                this->player[i]->playerAction.force
+            );
+        }
+        return ans;
+    }
+
+};
+
+gameMatch* myMatch;
+
+
+
+
+int main() {
+
+    myMatch = new gameMatch;
+    for (int i = 0; i < 5; i++) {
+        printf("%d %d ", myMatch->player[i]->playerPosition.X, myMatch->player[i]->playerPosition.Y);
+    }
+
+    cin >> myTeamID >> MAP_W >> MAP_H >> numTurn;
+
+    if (myTeamID == 1) {
+        //swap(HALF_1, HALF_2);
+        swap(fieldLeft[0], fieldRight[0]);
+        fieldLeft.push_back(fieldRight[1]);
+        fieldRight.pop_back();
+    }
+
+
+
+    int gameTurn = 0;
+    while (gameTurn++ < numTurn) {
+        string input;
+        getline(cin, input);
+        myMatch->parseData(input);
+        myMatch->process();
+        myMatch->responseToServer();
+    }
+    return 0;
+}

@@ -1,0 +1,95 @@
+bool isBetterDependOnState(int x, int xx) {
+        if (this->gameState == HALF_1) {
+            return x > xx;
+        }
+        return x < xx;
+    }
+
+    vec2 calcGoodDirection (Player* attacker) {
+        for (int i = 0; i < 5; i++) {
+            if (attacker != this->player[i]) {
+                if (this->isBetterDependOnState(this->player[i]->playerPosition.X, attacker->playerPosition.X)) {
+                    vec2 nxPoint = this->player[i]->playerPosition;
+                    if (nxPoint.Y > MAP_H / 2) {
+                        nxPoint.Y -= 1500;
+                        int xxx = 1500;
+                        if (this->gameState != HALF_1) xxx = -xxx;
+                        nxPoint.X += xxx;
+                    } else {
+                        int xxx = 1500;
+                        if (this->gameState != HALF_1) xxx = -xxx;
+                        nxPoint.Y += 1500;
+                        nxPoint.X += xxx;
+                    }
+                    return nxPoint;
+                }
+            }
+        }
+
+        int cnt = 0;
+        for (int i = 5; i < 10; i++) {
+            bool ok;
+            if (this->gameState == HALF_1) {
+                ok = this->player[i]->playerPosition.X > attacker->playerPosition.X;
+            } else
+            if (this->gameState == HALF_2 || this->gameState == EXTRA) {
+                ok = this->player[i]->playerPosition.X < attacker->playerPosition.X;
+            }
+            if (ok && this->Dist(this->player[i]->playerPosition, attacker->playerPosition) < 2000) {
+                ++cnt;
+            }
+        }
+        if (cnt < 3) {
+            int st = 0;
+            int fn = 3;
+            if (this->gameState != HALF_1)
+                st = 5, fn = 8;
+            for (int i = st; i < fn; i++) {
+                bool canBeSteal = false;
+                int maxRange = 12;
+                for (int range = 1; range <= maxRange; range++) {
+
+                    int dist = maxKick * range;
+
+                    vec2 nxPoint = vec2(attacker->playerPosition.X + dx[i] * dist, attacker->playerPosition.Y + dy[i] * dist);
+
+                    for (int j = 5; j < 10; j++) {
+                        if (this->Dist(this->player[j]->playerPosition, nxPoint) < maxKick) {
+                            canBeSteal = true;
+                            break;
+                        }
+                    }
+                }
+                if (!canBeSteal) {
+                    return vec2(
+                                attacker->playerPosition.X + dx[i] * maxRange * maxKick,
+                                attacker->playerPosition.Y + dy[i] * maxRange * maxKick
+                                );
+                }
+             }
+        }
+
+        for (int i = 0; i < 5; i++) {
+            if (attacker != this->player[i]) {
+                int maxRange = 12;
+                bool canBeSteal = false;
+                for (int range = 1; range <= maxRange; range++) {
+
+                    int dist = maxKick * range;
+
+                    vec2 nxPoint = vec2(attacker->playerPosition.X + dx[i] * dist, attacker->playerPosition.Y + dy[i] * dist);
+
+                    for (int j = 5; j < 10; j++) {
+                        if (this->Dist(this->player[j]->playerPosition, nxPoint) < maxKick) {
+                            canBeSteal = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!canBeSteal) {
+                    return this->player[i]->playerPosition;
+                }
+            }
+        }
+    }
